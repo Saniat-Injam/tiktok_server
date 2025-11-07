@@ -34,8 +34,8 @@ app.post("/send", async (req, res) => {
 });
 
 app.get("/", (req, res) => {
-  res.send("🔥 Live Notification API running successfully");
+  res.send("Live Notification API running successfully");
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
