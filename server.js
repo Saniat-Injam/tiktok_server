@@ -1,148 +1,32 @@
-// // Full Express + Socket.IO + FCM integrated server:
-
-// import express from "express";
-// import admin from "firebase-admin";
-// import cors from "cors";
-// import dotenv from "dotenv";
-// import { readFileSync } from "fs";
-// import http from "http";
-// import { Server } from "socket.io";
-// import { sendCallNotification } from "./fcm_service.js";
-
-// dotenv.config();
-
-// // Initialize Firebase Admin
-// const serviceAccount = JSON.parse(readFileSync("./service-account.json", "utf8"));
-// admin.initializeApp({
-//   credential: admin.credential.cert(serviceAccount),
-// });
-
-// const app = express();
-// app.use(cors());
-// app.use(express.json());
-
-// const server = http.createServer(app);
-// const io = new Server(server, {
-//   cors: { origin: "*" },
-// });
-
-// let users = {}; // { userId: socketId }
-
-// // --- SOCKET.IO EVENTS ---
-// io.on("connection", (socket) => {
-//   console.log("🟢 User connected:", socket.id);
-
-//   // Register user
-//   socket.on("register", (userId) => {
-//     users[userId] = socket.id;
-//     console.log(`✅ Registered ${userId} -> ${socket.id}`);
-//   });
-
-//   // Handle outgoing call
-//   socket.on("call-user", async (data) => {
-//     const { callerId, callerName, receiverId, isVideo, roomId, fcmToken } = data;
-//     const receiverSocket = users[receiverId];
-
-//     if (receiverSocket) {
-//       io.to(receiverSocket).emit("incoming-call", {
-//         callerId,
-//         callerName,
-//         isVideo,
-//         roomId,
-//       });
-//       console.log(`📞 Call signal sent to ${receiverId}`);
-//     } else if (fcmToken) {
-//       // Receiver is offline → send FCM push
-//       await sendCallNotification(fcmToken, data);
-//       console.log(`📲 FCM call notification sent to ${receiverId}`);
-//     }
-//   });
-
-//   // Handle answer
-//   socket.on("answer-call", (data) => {
-//     const { callerId, sdp } = data;
-//     const callerSocket = users[callerId];
-//     if (callerSocket) {
-//       io.to(callerSocket).emit("call-answered", { sdp });
-//       console.log(`✅ Call answered by ${data.receiverId}`);
-//     }
-//   });
-
-//   // Handle ICE candidates
-//   socket.on("ice-candidate", (data) => {
-//     const { targetId, candidate } = data;
-//     const targetSocket = users[targetId];
-//     if (targetSocket) {
-//       io.to(targetSocket).emit("ice-candidate", candidate);
-//     }
-//   });
-
-//   // End call
-//   socket.on("end-call", (data) => {
-//     const { targetId } = data;
-//     const targetSocket = users[targetId];
-//     if (targetSocket) {
-//       io.to(targetSocket).emit("call-ended");
-//       console.log(`❌ Call ended with ${targetId}`);
-//     }
-//   });
-
-//   // Disconnect
-//   socket.on("disconnect", () => {
-//     for (const [userId, sockId] of Object.entries(users)) {
-//       if (sockId === socket.id) {
-//         delete users[userId];
-//         console.log(`🔴 User disconnected: ${userId}`);
-//         break;
-//       }
-//     }
-//   });
-// });
-
-// // --- REST API (for notification testing) ---
-// app.post("/send", async (req, res) => {
-//   const { title, body, topic, token } = req.body;
-
-//   if (!title || !body || (!topic && !token)) {
-//     return res.status(400).json({ success: false, message: "Missing title/body/token/topic" });
-//   }
-
-//   const message = {
-//     notification: { title, body },
-//     ...(topic ? { topic } : { token }),
-//   };
-
-//   try {
-//     const response = await admin.messaging().send(message);
-//     res.json({ success: true, response });
-//   } catch (error) {
-//     console.error("❌ FCM Error:", error);
-//     res.status(500).json({ success: false, error: error.message });
-//   }
-// });
-
-// app.get("/", (req, res) => {
-//   res.send("✅ WebRTC Signaling + FCM Server running successfully!");
-// });
-
-// const PORT = process.env.PORT || 5000;
-// server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
-
 
 // server.js
 import express from "express";
+import admin from "firebase-admin";
 import cors from "cors";
+import dotenv from "dotenv";
+import { readFileSync } from "fs";
 import http from "http";
 import { Server } from "socket.io";
+import { sendCallNotification } from "./fcm_service.js";
+
+dotenv.config();
+
+// Initialize Firebase Admin
+const serviceAccount = JSON.parse(readFileSync("./service-account.json", "utf8"));
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
+const io = new Server(server, {
+  cors: { origin: "*" },
+});
 
-// Users map: userId -> socketId
+// Map of users: userId -> { socketId, fcmToken }
 const users = new Map();
 
 // --- SOCKET.IO EVENTS ---
@@ -150,53 +34,78 @@ io.on("connection", (socket) => {
   console.log("🟢 User connected:", socket.id);
 
   // Register user
-  socket.on("register", (userId) => {
-    users.set(userId, socket.id);
+  socket.on("register", (data) => {
+    const { userId, fcmToken } = data;
+    users.set(userId, { socketId: socket.id, fcmToken });
     console.log(`✅ Registered ${userId} -> ${socket.id}`);
   });
 
-  // Call user
-  socket.on("call-user", (data) => {
-    const { from, to, roomId, isVideo } = data;
-    const targetSocket = users.get(to);
-    if (targetSocket) {
-      io.to(targetSocket).emit("incoming-call", { from, roomId, isVideo });
-      console.log(`📞 Signaled call to ${to}`);
+  // Outgoing call
+  socket.on("call-user", async (data) => {
+    const { from, to, callerName, roomId, isVideo } = data;
+    const receiver = users.get(to);
+
+    if (receiver) {
+      io.to(receiver.socketId).emit("incoming-call", {
+        from,
+        callerName,
+        roomId,
+        isVideo,
+      });
+      console.log(`📞 Call signal sent to ${to}`);
     } else {
-      console.log(`⚠️ User ${to} not online`);
+      // User offline → send FCM
+      const fcmToken = receiver?.fcmToken || data.fcmToken;
+      if (fcmToken) {
+        await sendCallNotification(fcmToken, { ...data, receiverId: to });
+        console.log(`📲 FCM call notification sent to ${to}`);
+      }
     }
   });
 
-  // Answer call
-  socket.on("answer-call", (data) => {
-    const { to, sdp } = data;
-    const targetSocket = users.get(to);
-    if (targetSocket) {
-      io.to(targetSocket).emit("call-answered", { sdp });
-      console.log(`✅ Call answered for ${to}`);
+  // Offer
+  socket.on("offer", (data) => {
+    const { to } = data;
+    const receiver = users.get(to);
+    if (receiver) {
+      io.to(receiver.socketId).emit("offer", data);
+      console.log(`📤 Offer forwarded to ${to}`);
+    }
+  });
+
+  // Answer
+  socket.on("answer", (data) => {
+    const { to } = data;
+    const receiver = users.get(to);
+    if (receiver) {
+      io.to(receiver.socketId).emit("answer", data);
+      console.log(`📥 Answer forwarded to ${to}`);
     }
   });
 
   // ICE candidates
   socket.on("ice-candidate", (data) => {
-    const { to, candidate } = data;
-    const targetSocket = users.get(to);
-    if (targetSocket) {
-      io.to(targetSocket).emit("ice-candidate", candidate);
+    const { to } = data;
+    const receiver = users.get(to);
+    if (receiver) {
+      io.to(receiver.socketId).emit("ice-candidate", data);
     }
   });
 
   // End call
-  socket.on("end-call", (to) => {
-    const targetSocket = users.get(to);
-    if (targetSocket) io.to(targetSocket).emit("call-ended");
-    console.log(`❌ Call ended with ${to}`);
+  socket.on("end-call", (data) => {
+    const { to } = data;
+    const receiver = users.get(to);
+    if (receiver) {
+      io.to(receiver.socketId).emit("call-ended");
+      console.log(`❌ Call ended with ${to}`);
+    }
   });
 
   // Disconnect
   socket.on("disconnect", () => {
-    for (const [userId, sockId] of users.entries()) {
-      if (sockId === socket.id) {
+    for (const [userId, info] of users.entries()) {
+      if (info.socketId === socket.id) {
         users.delete(userId);
         console.log(`🔴 User disconnected: ${userId}`);
         break;
@@ -205,8 +114,28 @@ io.on("connection", (socket) => {
   });
 });
 
-// Health check
-app.get("/", (req, res) => res.send("✅ WebRTC Signaling Server running!"));
+// --- REST API for testing FCM ---
+app.post("/send", async (req, res) => {
+  const { title, body, token, topic } = req.body;
+  if (!title || !body || (!token && !topic)) {
+    return res.status(400).json({ success: false, message: "Missing title/body/token/topic" });
+  }
+
+  const message = {
+    notification: { title, body },
+    ...(token ? { token } : { topic }),
+  };
+
+  try {
+    const response = await admin.messaging().send(message);
+    res.json({ success: true, response });
+  } catch (error) {
+    console.error("❌ FCM Error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get("/", (req, res) => res.send("✅ WebRTC Signaling + FCM Server running successfully!"));
 
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
