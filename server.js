@@ -1,4 +1,136 @@
 
+// // server.js
+// import express from "express";
+// import http from "http";
+// import { Server } from "socket.io";
+// import admin from "firebase-admin";
+// import cors from "cors";
+// import dotenv from "dotenv";
+// import { sendCallNotification } from "./fcm_service.js";
+
+// dotenv.config();
+
+// // === Firebase Admin Setup ===
+// const serviceAccount = {
+//   type: "service_account",
+//   project_id: process.env.FIREBASE_PROJECT_ID,
+//   private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
+//   private_key: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, "\n"),
+//   client_email: process.env.FIREBASE_CLIENT_EMAIL,
+//   client_id: process.env.FIREBASE_CLIENT_ID,
+//   auth_uri: "https://accounts.google.com/o/oauth2/auth",
+//   token_uri: "https://oauth2.googleapis.com/token",
+//   auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs",
+//   client_x509_cert_url: process.env.FIREBASE_CLIENT_CERT_URL,
+// };
+
+// admin.initializeApp({
+//   credential: admin.credential.cert(serviceAccount),
+// });
+
+// // === Express + Socket.IO Setup ===
+// const app = express();
+// app.use(cors());
+// app.use(express.json());
+
+// const server = http.createServer(app);
+// const io = new Server(server, {
+//   cors: { origin: "*" },
+//   transports: ["websocket", "polling"],
+// });
+
+// // === Active Users Map ===
+// const users = new Map(); // userId → { socketId, fcmToken }
+
+// // === Socket.IO Connection ===
+// io.on("connection", (socket) => {
+//   console.log("User connected:", socket.id);
+
+//   // 1. Register user
+//   socket.on("register", (data) => {
+//     const { userId, fcmToken } = data;
+//     if (!userId) return;
+//     users.set(userId, { socketId: socket.id, fcmToken });
+//     console.log(`Registered: ${userId} → ${socket.id}`);
+//   });
+
+//   // 2. Offer (caller → receiver)
+//   socket.on("offer", async (data) => {
+//     const { from, to, sdp, type, callerName, isVideo, callId } = data;
+//     const receiver = users.get(to);
+
+//     if (receiver?.socketId) {
+//       // Online: send via socket
+//       io.to(receiver.socketId).emit("offer", data);
+//       console.log(`Offer sent via socket to ${to}`);
+//     } else {
+//       // Offline: send FCM
+//       try {
+//         const userDoc = await admin.firestore().collection("users").doc(to).get();
+//         const fcmToken = userDoc.data()?.fcmToken;
+//         if (fcmToken) {
+//           await sendCallNotification(fcmToken, data);
+//           console.log(`FCM offer sent to ${to}`);
+//         } else {
+//           console.log(`No FCM token for ${to}`);
+//         }
+//       } catch (err) {
+//         console.error("FCM error:", err);
+//       }
+//     }
+//   });
+
+//   // 3. Answer
+//   socket.on("answer", (data) => {
+//     const receiver = users.get(data.to);
+//     if (receiver?.socketId) {
+//       io.to(receiver.socketId).emit("answer", data);
+//       console.log(`Answer sent to ${data.to}`);
+//     }
+//   });
+
+//   // 4. ICE Candidate
+//   socket.on("ice-candidate", (data) => {
+//     const receiver = users.get(data.to);
+//     if (receiver?.socketId) {
+//       io.to(receiver.socketId).emit("ice-candidate", data);
+//     }
+//   });
+
+//   // 5. End Call
+//   socket.on("end-call", (data) => {
+//     const receiver = users.get(data.to);
+//     if (receiver?.socketId) {
+//       io.to(receiver.socketId).emit("call-ended", data);
+//       console.log(`Call ended signal sent to ${data.to}`);
+//     }
+//   });
+
+//   // 6. Disconnect
+//   socket.on("disconnect", () => {
+//     for (const [userId, info] of users.entries()) {
+//       if (info.socketId === socket.id) {
+//         users.delete(userId);
+//         console.log(`User disconnected: ${userId}`);
+//         break;
+//       }
+//     }
+//   });
+// });
+
+// // === Health Check ===
+// app.get("/", (req, res) => {
+//   res.send("WebRTC Signaling + FCM Server Running");
+// });
+
+// // === Start Server ===
+// const PORT = process.env.PORT || 5000;
+// server.listen(PORT, () => {
+//   console.log(`Server running on port ${PORT}`);
+// });
+
+
+
 // server.js
 import express from "express";
 import http from "http";
@@ -10,7 +142,9 @@ import { sendCallNotification } from "./fcm_service.js";
 
 dotenv.config();
 
-// === Firebase Admin Setup ===
+// ========================================
+// 1. FIREBASE ADMIN SETUP
+// ========================================
 const serviceAccount = {
   type: "service_account",
   project_id: process.env.FIREBASE_PROJECT_ID,
@@ -28,68 +162,87 @@ admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
 
-// === Express + Socket.IO Setup ===
+// ========================================
+// 2. EXPRESS + SOCKET.IO SETUP
+// ========================================
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: "*" },
-  transports: ["websocket", "polling"],
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"]
+  },
+  transports: ["websocket", "polling"]
 });
 
-// === Active Users Map ===
+// ========================================
+// 3. IN-MEMORY USER MAP
+// ========================================
 const users = new Map(); // userId → { socketId, fcmToken }
 
-// === Socket.IO Connection ===
+// ========================================
+// 4. SOCKET.IO EVENTS
+// ========================================
 io.on("connection", (socket) => {
-  console.log("User connected:", socket.id);
+  console.log(`[SOCKET] User connected: ${socket.id}`);
 
-  // 1. Register user
+  // ─── REGISTER USER ─────────────────────
   socket.on("register", (data) => {
     const { userId, fcmToken } = data;
     if (!userId) return;
-    users.set(userId, { socketId: socket.id, fcmToken });
-    console.log(`Registered: ${userId} → ${socket.id}`);
+
+    users.set(userId, {
+      socketId: socket.id,
+      fcmToken: fcmToken || null
+    });
+
+    console.log(`[REGISTER] ${userId} → Socket: ${socket.id} | FCM: ${fcmToken?.substring(0, 20)}...`);
   });
 
-  // 2. Offer (caller → receiver)
+  // ─── OFFER (CALL INITIATED) ─────────────
   socket.on("offer", async (data) => {
     const { from, to, sdp, type, callerName, isVideo, callId } = data;
+
+    console.log(`[OFFER] From: ${from} → To: ${to} | Video: ${isVideo} | CallID: ${callId}`);
+    console.log(`         SDP Length: ${sdp?.length} | Online: ${!!users.get(to)?.socketId}`);
+
     const receiver = users.get(to);
 
     if (receiver?.socketId) {
-      // Online: send via socket
+      // Online → Send via Socket
       io.to(receiver.socketId).emit("offer", data);
-      console.log(`Offer sent via socket to ${to}`);
+      console.log(`[SOCKET] Offer forwarded to ${to}`);
     } else {
-      // Offline: send FCM
+      // Offline → Send via FCM
       try {
         const userDoc = await admin.firestore().collection("users").doc(to).get();
         const fcmToken = userDoc.data()?.fcmToken;
+
         if (fcmToken) {
           await sendCallNotification(fcmToken, data);
-          console.log(`FCM offer sent to ${to}`);
+          console.log(`[FCM] Offer sent to ${to}`);
         } else {
-          console.log(`No FCM token for ${to}`);
+          console.log(`[FCM] No FCM token for ${to}`);
         }
       } catch (err) {
-        console.error("FCM error:", err);
+        console.error("[FCM ERROR]", err.message);
       }
     }
   });
 
-  // 3. Answer
+  // ─── ANSWER ────────────────────────────
   socket.on("answer", (data) => {
     const receiver = users.get(data.to);
     if (receiver?.socketId) {
       io.to(receiver.socketId).emit("answer", data);
-      console.log(`Answer sent to ${data.to}`);
+      console.log(`[ANSWER] Sent to ${data.to}`);
     }
   });
 
-  // 4. ICE Candidate
+  // ─── ICE CANDIDATE ─────────────────────
   socket.on("ice-candidate", (data) => {
     const receiver = users.get(data.to);
     if (receiver?.socketId) {
@@ -97,34 +250,43 @@ io.on("connection", (socket) => {
     }
   });
 
-  // 5. End Call
+  // ─── END CALL ──────────────────────────
   socket.on("end-call", (data) => {
     const receiver = users.get(data.to);
     if (receiver?.socketId) {
       io.to(receiver.socketId).emit("call-ended", data);
-      console.log(`Call ended signal sent to ${data.to}`);
+      console.log(`[END-CALL] Signal sent to ${data.to}`);
     }
   });
 
-  // 6. Disconnect
+  // ─── DISCONNECT ────────────────────────
   socket.on("disconnect", () => {
     for (const [userId, info] of users.entries()) {
       if (info.socketId === socket.id) {
         users.delete(userId);
-        console.log(`User disconnected: ${userId}`);
+        console.log(`[DISCONNECT] ${userId} removed`);
         break;
       }
     }
   });
 });
 
-// === Health Check ===
+// ========================================
+// 5. HEALTH CHECK
+// ========================================
 app.get("/", (req, res) => {
-  res.send("WebRTC Signaling + FCM Server Running");
+  res.send(`
+    <h2>WebRTC Signaling Server Running</h2>
+    <p>Time: ${new Date().toLocaleString('en-US', { timeZone: 'Asia/Dhaka' })}</p>
+    <p>Online Users: ${users.size}</p>
+  `);
 });
 
-// === Start Server ===
+// ========================================
+// 6. START SERVER
+// ========================================
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`\nServer running on https://tiktok-server-1g37.onrender.com:${PORT}`);
+  console.log(`BD Time: ${new Date().toLocaleString('en-US', { timeZone: 'Asia/Dhaka' })}\n`);
 });
