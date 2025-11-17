@@ -343,3 +343,7 @@ server.listen(PORT, () => {
   console.log(`URL: https://tiktok-server-1g37.onrender.com`);
   console.log(`BD Time: ${new Date().toLocaleString('en-US', { timeZone: 'Asia/Dhaka' })}\n`);
 });
+
+
+
+// New .env file added
