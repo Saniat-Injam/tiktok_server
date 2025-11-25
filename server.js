@@ -1041,6 +1041,142 @@
 // });
 
 
+// // server.js
+// import express from "express";
+// import http from "http";
+// import { Server } from "socket.io";
+// import admin from "firebase-admin";
+// import cors from "cors";
+// import dotenv from "dotenv";
+// import { sendCallNotification } from "./fcm_service.js";
+// import { initChatSocket } from "./sockets/chat_socket.js";
+
+// dotenv.config();
+
+// // ========================================
+// // 1. FIREBASE ADMIN SETUP
+// // ========================================
+// let adminInitialized = false;
+
+// try {
+//   const serviceAccount = {
+//     type: "service_account",
+//     project_id: process.env.FIREBASE_PROJECT_ID,
+//     private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
+//     private_key: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, "\n"),
+//     client_email: process.env.FIREBASE_CLIENT_EMAIL,
+//     client_id: process.env.FIREBASE_CLIENT_ID,
+//     auth_uri: "https://accounts.google.com/o/oauth2/auth",
+//     token_uri: "https://oauth2.googleapis.com/token",
+//     auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs",
+//     client_x509_cert_url: process.env.FIREBASE_CLIENT_CERT_URL,
+//   };
+
+//   admin.initializeApp({
+//     credential: admin.credential.cert(serviceAccount),
+//   });
+//   adminInitialized = true;
+//   console.log("[FIREBASE] Admin SDK initialized successfully");
+// } catch (error) {
+//   console.error("[FIREBASE ERROR]", error.message);
+// }
+
+// // ========================================
+// // 2. EXPRESS + SINGLE SOCKET.IO SERVER
+// // ========================================
+// const app = express();
+// app.use(cors({ origin: "*" }));
+// app.use(express.json());
+
+// const server = http.createServer(app);
+
+// // ONE Socket.IO instance with namespaces
+// const io = new Server(server, {
+//   cors: { origin: "*", methods: ["GET", "POST"] },
+//   transports: ["websocket", "polling"],
+// });
+
+// // ========================================
+// // 3. CHAT NAMESPACE (Messenger-style chat)
+// // ========================================
+// initChatSocket(io.of("/chat"));  // ← Now uses namespace
+
+// // ========================================
+// // 4. CALL NAMESPACE (Your existing calling system)
+// // ========================================
+// const callNamespace = io.of("/call");
+// const callUsers = new Map(); // userId → { socketId, fcmToken }
+
+// callNamespace.on("connection", (socket) => {
+//   const userId = socket.handshake.query.userId;
+//   console.log(`[CALL] Connected: ${socket.id} (user: ${userId || "unknown"})`);
+
+//   socket.on("register", async (data) => {
+//     const { userId: regUserId, fcmToken } = data;
+//     const finalUserId = regUserId || userId;
+//     if (!finalUserId) return;
+
+//     callUsers.set(finalUserId, { socketId: socket.id, fcmToken: fcmToken || null });
+
+//     if (adminInitialized && fcmToken) {
+//       try {
+//         await admin.firestore().collection("users").doc(finalUserId).set(
+//           { fcmToken },
+//           { merge: true }
+//         );
+//       } catch (err) {
+//         console.error("[FIRESTORE ERROR]", err.message);
+//       }
+//     }
+//   });
+
+//   ["offer", "answer", "ice-candidate", "end-call"].forEach(event => {
+//     socket.on(event, (data) => {
+//       const receiver = callUsers.get(data.to);
+//       if (receiver?.socketId) {
+//         callNamespace.to(receiver.socketId).emit(event, data);
+//       }
+//     });
+//   });
+
+//   socket.on("disconnect", () => {
+//     for (const [id, info] of callUsers.entries()) {
+//       if (info.socketId === socket.id) {
+//         callUsers.delete(id);
+//         break;
+//       }
+//     }
+//   });
+// });
+
+// // ========================================
+// // 5. REST APIs
+// // ========================================
+// app.get("/users", async (req, res) => {
+//   try {
+//     const snapshot = await admin.firestore().collection("users").get();
+//     const users = snapshot.docs.map((doc) => ({ uid: doc.id, ...doc.data() }));
+//     res.json(users);
+//   } catch (err) {
+//     res.status(500).json({ error: err.message });
+//   }
+// });
+
+// app.get("/", (req, res) => {
+//   res.send(`<h2>Server Running - Chat + Call</h2><p>${new Date()}</p>`);
+// });
+
+// // ========================================
+// // 6. START SERVER
+// // ========================================
+// const PORT = process.env.PORT || 3000;
+// server.listen(PORT, "0.0.0.0", () => {
+//   console.log(`Server running on http://10.0.30.32:${PORT}`);
+// });
+
+
+
+
 // server.js
 import express from "express";
 import http from "http";
@@ -1090,7 +1226,6 @@ app.use(express.json());
 
 const server = http.createServer(app);
 
-// ONE Socket.IO instance with namespaces
 const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] },
   transports: ["websocket", "polling"],
@@ -1099,10 +1234,10 @@ const io = new Server(server, {
 // ========================================
 // 3. CHAT NAMESPACE (Messenger-style chat)
 // ========================================
-initChatSocket(io.of("/chat"));  // ← Now uses namespace
+initChatSocket(io.of("/chat")); // handles P2P chat
 
 // ========================================
-// 4. CALL NAMESPACE (Your existing calling system)
+// 4. CALL NAMESPACE (Audio/Video calling)
 // ========================================
 const callNamespace = io.of("/call");
 const callUsers = new Map(); // userId → { socketId, fcmToken }
@@ -1111,6 +1246,7 @@ callNamespace.on("connection", (socket) => {
   const userId = socket.handshake.query.userId;
   console.log(`[CALL] Connected: ${socket.id} (user: ${userId || "unknown"})`);
 
+  // Register user & FCM token
   socket.on("register", async (data) => {
     const { userId: regUserId, fcmToken } = data;
     const finalUserId = regUserId || userId;
@@ -1130,7 +1266,8 @@ callNamespace.on("connection", (socket) => {
     }
   });
 
-  ["offer", "answer", "ice-candidate", "end-call"].forEach(event => {
+  // Handle call signaling
+  ["offer", "answer", "ice-candidate", "end-call"].forEach((event) => {
     socket.on(event, (data) => {
       const receiver = callUsers.get(data.to);
       if (receiver?.socketId) {
@@ -1171,5 +1308,5 @@ app.get("/", (req, res) => {
 // ========================================
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(`Server running on http://10.0.30.32:${PORT}`);
+  console.log(`Server running on http://0.0.0.0:${PORT}`);
 });

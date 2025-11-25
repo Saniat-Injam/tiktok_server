@@ -171,31 +171,76 @@
 // };
 
 // sockets/chat_socket.js
-export const initChatSocket = (namespace) => {  // ← Now accepts namespace
-  const onlineUsers = new Map();
+
+
+// export const initChatSocket = (namespace) => {  // ← Now accepts namespace
+//   const onlineUsers = new Map();
+
+//   namespace.on("connection", (socket) => {
+//     const userId = socket.handshake.query.userId;
+//     if (!userId) {
+//       socket.disconnect();
+//       return;
+//     }
+
+//     onlineUsers.set(userId, socket.id);
+//     console.log(`[CHAT] User connected: ${userId}`);
+
+//     socket.on("message", async (data) => {
+//       // ... your existing message logic (keep it exactly as I gave you before)
+//       // Just make sure you're using namespace.to() instead of io.to()
+//       const receiverSocketId = onlineUsers.get(data.to);
+//       if (receiverSocketId) {
+//         namespace.to(receiverSocketId).emit("message", fullMessage);  // ← Use namespace
+//       }
+//       socket.emit("message", fullMessage);
+//     });
+
+//     socket.on("disconnect", () => {
+//       onlineUsers.delete(userId);
+//     });
+//   });
+// };
+
+// sockets/chat_socket.js
+import { createMessageObject } from "../models/message_model.js";
+
+export const initChatSocket = (namespace) => {
+  const onlineUsers = new Map(); // userId → socketId
 
   namespace.on("connection", (socket) => {
     const userId = socket.handshake.query.userId;
     if (!userId) {
-      socket.disconnect();
-      return;
+      console.log("[CHAT] User connected without userId, disconnecting...");
+      return socket.disconnect();
     }
 
     onlineUsers.set(userId, socket.id);
     console.log(`[CHAT] User connected: ${userId}`);
 
-    socket.on("message", async (data) => {
-      // ... your existing message logic (keep it exactly as I gave you before)
-      // Just make sure you're using namespace.to() instead of io.to()
+    // Listen for incoming messages
+    socket.on("message", (data) => {
+      const fullMessage = createMessageObject({
+        from: userId,
+        to: data.to,
+        text: data.text,
+      });
+
       const receiverSocketId = onlineUsers.get(data.to);
+
+      // Send to receiver if online
       if (receiverSocketId) {
-        namespace.to(receiverSocketId).emit("message", fullMessage);  // ← Use namespace
+        namespace.to(receiverSocketId).emit("message", fullMessage);
       }
+
+      // Send back to sender for confirmation
       socket.emit("message", fullMessage);
     });
 
+    // Handle disconnect
     socket.on("disconnect", () => {
       onlineUsers.delete(userId);
+      console.log(`[CHAT] User disconnected: ${userId}`);
     });
   });
 };
