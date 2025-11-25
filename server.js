@@ -899,16 +899,157 @@
 
 
 
+// import express from "express";
+// import http from "http";
+// import { Server } from "socket.io";
+// import admin from "firebase-admin";
+// import cors from "cors";
+// import dotenv from "dotenv";
+
+// // NEW: Socket modules
+// import callSocket from "./sockets/call_socket.js";
+// import chatSocket from "./sockets/chat_socket.js";
+
+// dotenv.config();
+
+// // ========================================
+// // 1. FIREBASE ADMIN SETUP
+// // ========================================
+// let adminInitialized = false;
+
+// try {
+//   const serviceAccount = {
+//     type: "service_account",
+//     project_id: process.env.FIREBASE_PROJECT_ID,
+//     private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
+//     private_key: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, "\n"),
+//     client_email: process.env.FIREBASE_CLIENT_EMAIL,
+//     client_id: process.env.FIREBASE_CLIENT_ID,
+//     auth_uri: "https://accounts.google.com/o/oauth2/auth",
+//     token_uri: "https://oauth2.googleapis.com/token",
+//     auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs",
+//     client_x509_cert_url: process.env.FIREBASE_CLIENT_CERT_URL,
+//   };
+
+//   if (!serviceAccount.project_id) throw new Error("Missing FIREBASE_PROJECT_ID");
+
+//   admin.initializeApp({
+//     credential: admin.credential.cert(serviceAccount),
+//   });
+
+//   adminInitialized = true;
+//   console.log("[FIREBASE] Admin SDK initialized successfully");
+// } catch (error) {
+//   console.error("[FIREBASE ERROR]", error.message);
+//   console.log("[FIREBASE] Running without FCM");
+// }
+
+// // ========================================
+// // 2. EXPRESS + SOCKET.IO SETUP
+// // ========================================
+// const app = express();
+// app.use(cors({ origin: "*" }));
+// app.use(express.json());
+
+// const server = http.createServer(app);
+
+// const io = new Server(server, {
+//   cors: { origin: "*", methods: ["GET", "POST"] },
+//   transports: ["websocket", "polling"],
+// });
+
+// // ========================================
+// // 3. IN-MEMORY USER MAP
+// // userId → { socketId, fcmToken }
+// // ========================================
+// const users = new Map();
+
+// // ========================================
+// // 4. SOCKET CONNECTION
+// // ========================================
+// io.on("connection", (socket) => {
+//   const userId = socket.handshake.query.userId || null;
+//   console.log(`[SOCKET] Connected: ${socket.id} (user: ${userId || "unknown"})`);
+
+//   // REGISTER USER
+//   socket.on("register", async ({ userId: regUserId, fcmToken }) => {
+//     const finalUserId = regUserId || userId;
+//     if (!finalUserId) return;
+
+//     users.set(finalUserId, {
+//       socketId: socket.id,
+//       fcmToken: fcmToken || null,
+//     });
+
+//     console.log(
+//       `[REGISTER] ${finalUserId} → Socket: ${socket.id} | FCM: ${
+//         fcmToken ? fcmToken.substring(0, 20) + "..." : "none"
+//       }`
+//     );
+
+//     // SAVE TOKEN TO FIRESTORE IF AVAILABLE
+//     if (adminInitialized && fcmToken) {
+//       try {
+//         await admin.firestore().collection("users").doc(finalUserId).set(
+//           { fcmToken },
+//           { merge: true }
+//         );
+//         console.log(`[FIRESTORE] Token saved for ${finalUserId}`);
+//       } catch (err) {
+//         console.error("[FIRESTORE ERROR]", err.message);
+//       }
+//     }
+//   });
+
+//   // ATTACH CALLING SOCKET LOGIC
+//   callSocket(io, socket, users);
+
+//   // ATTACH CHAT SOCKET LOGIC
+//   chatSocket(io, socket, users);
+
+//   // USER DISCONNECT
+//   socket.on("disconnect", (reason) => {
+//     for (const [id, info] of users.entries()) {
+//       if (info.socketId === socket.id) {
+//         users.delete(id);
+//         console.log(`[DISCONNECT] ${id} (${reason})`);
+//         break;
+//       }
+//     }
+//   });
+// });
+
+// // ========================================
+// // 5. SERVER HEALTH CHECK
+// // ========================================
+// app.get("/", (req, res) => {
+//   res.send(`
+//     <h2>Backend Server Running</h2>
+//     <p>Time: ${new Date().toLocaleString("en-US", { timeZone: "Asia/Dhaka" })}</p>
+//     <p>Online Users: ${users.size}</p>
+//     <p>Firebase Ready: ${adminInitialized ? "Yes" : "No"}</p>
+//   `);
+// });
+
+// // ========================================
+// // 6. START SERVER
+// // ========================================
+// const PORT = process.env.PORT || 3000;
+
+// server.listen(PORT, "0.0.0.0", () => {
+//   console.log(`Server running on port ${PORT}`);
+// });
+
+
+// server.js
 import express from "express";
 import http from "http";
 import { Server } from "socket.io";
 import admin from "firebase-admin";
 import cors from "cors";
 import dotenv from "dotenv";
-
-// NEW: Socket modules
-import callSocket from "./sockets/call_socket.js";
-import chatSocket from "./sockets/chat_socket.js";
+import { sendCallNotification } from "./fcm_service.js";
+import { initChatSocket } from "./sockets/chat_socket.js";
 
 dotenv.config();
 
@@ -931,21 +1072,17 @@ try {
     client_x509_cert_url: process.env.FIREBASE_CLIENT_CERT_URL,
   };
 
-  if (!serviceAccount.project_id) throw new Error("Missing FIREBASE_PROJECT_ID");
-
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
   });
-
   adminInitialized = true;
   console.log("[FIREBASE] Admin SDK initialized successfully");
 } catch (error) {
   console.error("[FIREBASE ERROR]", error.message);
-  console.log("[FIREBASE] Running without FCM");
 }
 
 // ========================================
-// 2. EXPRESS + SOCKET.IO SETUP
+// 2. EXPRESS + SINGLE SOCKET.IO SERVER
 // ========================================
 const app = express();
 app.use(cors({ origin: "*" }));
@@ -953,66 +1090,59 @@ app.use(express.json());
 
 const server = http.createServer(app);
 
+// ONE Socket.IO instance with namespaces
 const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] },
   transports: ["websocket", "polling"],
 });
 
 // ========================================
-// 3. IN-MEMORY USER MAP
-// userId → { socketId, fcmToken }
+// 3. CHAT NAMESPACE (Messenger-style chat)
 // ========================================
-const users = new Map();
+initChatSocket(io.of("/chat"));  // ← Now uses namespace
 
 // ========================================
-// 4. SOCKET CONNECTION
+// 4. CALL NAMESPACE (Your existing calling system)
 // ========================================
-io.on("connection", (socket) => {
-  const userId = socket.handshake.query.userId || null;
-  console.log(`[SOCKET] Connected: ${socket.id} (user: ${userId || "unknown"})`);
+const callNamespace = io.of("/call");
+const callUsers = new Map(); // userId → { socketId, fcmToken }
 
-  // REGISTER USER
-  socket.on("register", async ({ userId: regUserId, fcmToken }) => {
+callNamespace.on("connection", (socket) => {
+  const userId = socket.handshake.query.userId;
+  console.log(`[CALL] Connected: ${socket.id} (user: ${userId || "unknown"})`);
+
+  socket.on("register", async (data) => {
+    const { userId: regUserId, fcmToken } = data;
     const finalUserId = regUserId || userId;
     if (!finalUserId) return;
 
-    users.set(finalUserId, {
-      socketId: socket.id,
-      fcmToken: fcmToken || null,
-    });
+    callUsers.set(finalUserId, { socketId: socket.id, fcmToken: fcmToken || null });
 
-    console.log(
-      `[REGISTER] ${finalUserId} → Socket: ${socket.id} | FCM: ${
-        fcmToken ? fcmToken.substring(0, 20) + "..." : "none"
-      }`
-    );
-
-    // SAVE TOKEN TO FIRESTORE IF AVAILABLE
     if (adminInitialized && fcmToken) {
       try {
         await admin.firestore().collection("users").doc(finalUserId).set(
           { fcmToken },
           { merge: true }
         );
-        console.log(`[FIRESTORE] Token saved for ${finalUserId}`);
       } catch (err) {
         console.error("[FIRESTORE ERROR]", err.message);
       }
     }
   });
 
-  // ATTACH CALLING SOCKET LOGIC
-  callSocket(io, socket, users);
+  ["offer", "answer", "ice-candidate", "end-call"].forEach(event => {
+    socket.on(event, (data) => {
+      const receiver = callUsers.get(data.to);
+      if (receiver?.socketId) {
+        callNamespace.to(receiver.socketId).emit(event, data);
+      }
+    });
+  });
 
-  // ATTACH CHAT SOCKET LOGIC
-  chatSocket(io, socket, users);
-
-  // USER DISCONNECT
-  socket.on("disconnect", (reason) => {
-    for (const [id, info] of users.entries()) {
+  socket.on("disconnect", () => {
+    for (const [id, info] of callUsers.entries()) {
       if (info.socketId === socket.id) {
-        users.delete(id);
-        console.log(`[DISCONNECT] ${id} (${reason})`);
+        callUsers.delete(id);
         break;
       }
     }
@@ -1020,22 +1150,26 @@ io.on("connection", (socket) => {
 });
 
 // ========================================
-// 5. SERVER HEALTH CHECK
+// 5. REST APIs
 // ========================================
+app.get("/users", async (req, res) => {
+  try {
+    const snapshot = await admin.firestore().collection("users").get();
+    const users = snapshot.docs.map((doc) => ({ uid: doc.id, ...doc.data() }));
+    res.json(users);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get("/", (req, res) => {
-  res.send(`
-    <h2>Backend Server Running</h2>
-    <p>Time: ${new Date().toLocaleString("en-US", { timeZone: "Asia/Dhaka" })}</p>
-    <p>Online Users: ${users.size}</p>
-    <p>Firebase Ready: ${adminInitialized ? "Yes" : "No"}</p>
-  `);
+  res.send(`<h2>Server Running - Chat + Call</h2><p>${new Date()}</p>`);
 });
 
 // ========================================
 // 6. START SERVER
 // ========================================
 const PORT = process.env.PORT || 3000;
-
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Server running on http://10.0.30.32:${PORT}`);
 });
