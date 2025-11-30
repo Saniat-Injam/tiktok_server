@@ -1,85 +1,67 @@
-// ============================================
-// CALL SOCKET HANDLER (One-to-One AV Calling)
-// ============================================
 
-export default function setupCallSocket(io) {
-  const callNamespace = io.of("/call");
+// sockets/call_socket.js
+import { sendCallNotification } from "../fcm_service.js";
+
+export const initCallSocket = (callNamespace) => {
+  const users = new Map(); // userId → { socketId, fcmToken }
 
   callNamespace.on("connection", (socket) => {
-    console.log("CALL SOCKET CONNECTED:", socket.id);
+    console.log(`[CALL] Connected: ${socket.id}`);
 
-    // When user joins with userId
-    socket.on("join", ({ userId }) => {
+    socket.on("register", ({ userId, fcmToken }) => {
+      if (!userId) return socket.emit("error", "userId required");
+
+      users.set(userId, { socketId: socket.id, fcmToken: fcmToken || null });
       socket.userId = userId;
-      console.log(`User ${userId} joined call namespace`);
+      console.log(`[CALL] Registered: ${userId}`);
     });
 
-    // ============================================
-    // SIGNALING EVENTS
-    // ============================================
+    // Incoming call initiation
+    socket.on("call-user", async ({ to, callerName, isVideo, callId }) => {
+      const receiver = users.get(to);
+      if (!receiver) return console.log(`[CALL] User ${to} not online`);
 
-    // Caller → Callee: sending offer SDP
-    socket.on("call-offer", ({ to, offer, caller }) => {
-      const targetSocket = findSocketByUserId(callNamespace, to);
-      if (targetSocket) {
-        targetSocket.emit("call-offer", { offer, caller });
+      // Send WebSocket event
+      callNamespace.to(receiver.socketId).emit("incoming-call", {
+        from: socket.userId,
+        callerName,
+        isVideo,
+        callId,
+      });
+
+      // Send FCM if app is in background
+      if (receiver.fcmToken) {
+        await sendCallNotification(receiver.fcmToken, {
+          from: socket.userId,
+          callerName,
+          isVideo,
+          callId,
+        });
       }
     });
 
-    // Callee → Caller: sending answer SDP
-    socket.on("call-answer", ({ to, answer }) => {
-      const targetSocket = findSocketByUserId(callNamespace, to);
-      if (targetSocket) {
-        targetSocket.emit("call-answer", { answer });
-      }
-    });
-
-    // ICE candidate exchange
-    socket.on("ice-candidate", ({ to, candidate }) => {
-      const targetSocket = findSocketByUserId(callNamespace, to);
-      if (targetSocket) {
-        targetSocket.emit("ice-candidate", { candidate });
-      }
-    });
-
-    // ============================================
-    // CALL EVENTS
-    // ============================================
-
-    // Caller rings the receiver
-    socket.on("call-user", ({ to, from }) => {
-      const targetSocket = findSocketByUserId(callNamespace, to);
-      if (targetSocket) {
-        targetSocket.emit("incoming-call", { from });
-      }
-    });
-
-    // Receiver rejected the call
-    socket.on("call-rejected", ({ to, reason }) => {
-      const targetSocket = findSocketByUserId(callNamespace, to);
-      if (targetSocket) {
-        targetSocket.emit("call-rejected", { reason });
-      }
-    });
-
-    // Call ended by any party
-    socket.on("call-ended", ({ to }) => {
-      const targetSocket = findSocketByUserId(callNamespace, to);
-      if (targetSocket) {
-        targetSocket.emit("call-ended");
-      }
+    // WebRTC Signaling
+    ["offer", "answer", "ice-candidate", "call-rejected", "call-ended"].forEach((event) => {
+      socket.on(event, (data) => {
+        const target = users.get(data.to);
+        if (target?.socketId) {
+          callNamespace.to(target.socketId).emit(event, {
+            ...data,
+            from: socket.userId,
+          });
+        }
+      });
     });
 
     socket.on("disconnect", () => {
-      console.log(`Call socket disconnected: ${socket.id}`);
+      if (socket.userId) {
+        users.delete(socket.userId);
+        console.log(`[CALL] Disconnected: ${socket.userId}`);
+      }
+    });
+
+    socket.on("error", (err) => {
+      console.error(`[CALL SOCKET ERROR] ${socket.id}:`, err.message);
     });
   });
-}
-
-// Helper to find socket by userId
-function findSocketByUserId(namespace, userId) {
-  for (const [id, socket] of namespace.sockets) {
-    if (socket.userId === userId) return socket;
-  }
-  return null;
-}
+};

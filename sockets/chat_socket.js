@@ -202,45 +202,137 @@
 //   });
 // };
 
+
+
+
+// // sockets/chat_socket.js
+// import { createMessageObject } from "../models/message_model.js";
+
+// export const initChatSocket = (namespace) => {
+//   const onlineUsers = new Map(); // userId → socketId
+
+//   namespace.on("connection", (socket) => {
+//     const userId = socket.handshake.query.userId;
+//     if (!userId) {
+//       console.log("[CHAT] User connected without userId, disconnecting...");
+//       return socket.disconnect();
+//     }
+
+//     onlineUsers.set(userId, socket.id);
+//     console.log(`[CHAT] User connected: ${userId}`);
+
+//     // Listen for incoming messages
+//     socket.on("message", (data) => {
+//       const fullMessage = createMessageObject({
+//         from: userId,
+//         to: data.to,
+//         text: data.text,
+//       });
+
+//       const receiverSocketId = onlineUsers.get(data.to);
+
+//       // Send to receiver if online
+//       if (receiverSocketId) {
+//         namespace.to(receiverSocketId).emit("message", fullMessage);
+//       }
+
+//       // Send back to sender for confirmation
+//       socket.emit("message", fullMessage);
+//     });
+
+//     // Handle disconnect
+//     socket.on("disconnect", () => {
+//       onlineUsers.delete(userId);
+//       console.log(`[CHAT] User disconnected: ${userId}`);
+//     });
+//   });
+// };
+
+
+
+// // sockets/chat_socket.js
+// import { createMessageObject } from "../models/message_model.js";
+
+// export const initChatSocket = (namespace) => {
+//   const onlineUsers = new Map();
+
+//   namespace.on("connection", (socket) => {
+//     const userId = socket.handshake.query.userId;
+
+//     if (!userId) {
+//       console.log("[CHAT] User connected without userId");
+//       return socket.disconnect();
+//     }
+
+//     onlineUsers.set(userId, socket.id);
+//     console.log(`[CHAT] ${userId} connected`);
+
+//     socket.on("message", (data) => {
+//       const fullMessage = createMessageObject({
+//         from: userId,
+//         to: data.to,
+//         text: data.text,
+//       });
+
+//       const receiverSocketId = onlineUsers.get(data.to);
+
+//       if (receiverSocketId) {
+//         namespace.to(receiverSocketId).emit("message", fullMessage);
+//         console.log(`[CHAT] Sent ${fullMessage.id}`);
+//       }
+//     });
+
+//     socket.on("disconnect", () => {
+//       onlineUsers.delete(userId);
+//       console.log(`[CHAT] ${userId} disconnected`);
+//     });
+//   });
+// };
+
+
+
+
+
 // sockets/chat_socket.js
-import { createMessageObject } from "../models/message_model.js";
+
+import { v4 as uuidv4 } from "uuid";
 
 export const initChatSocket = (namespace) => {
-  const onlineUsers = new Map(); // userId → socketId
+  const onlineUsers = new Map();
 
   namespace.on("connection", (socket) => {
     const userId = socket.handshake.query.userId;
-    if (!userId) {
-      console.log("[CHAT] User connected without userId, disconnecting...");
-      return socket.disconnect();
-    }
+
+    if (!userId) return socket.disconnect();
 
     onlineUsers.set(userId, socket.id);
-    console.log(`[CHAT] User connected: ${userId}`);
+    console.log(`[CHAT] ${userId} connected`);
 
-    // Listen for incoming messages
     socket.on("message", (data) => {
-      const fullMessage = createMessageObject({
-        from: userId,
+      const finalMessage = {
+        id: uuidv4(), // ✅ FIXED - REAL UNIQUE ID
+        from: {
+          id: userId,
+          name: data.from.name,
+          profileImage: data.from.profileImage,
+        },
         to: data.to,
         text: data.text,
-      });
+        createdAt: new Date(),
+      };
 
       const receiverSocketId = onlineUsers.get(data.to);
 
-      // Send to receiver if online
       if (receiverSocketId) {
-        namespace.to(receiverSocketId).emit("message", fullMessage);
+        // ✅ DO NOT SEND TO SENDER
+        namespace.to(receiverSocketId).emit("message", finalMessage);
+        console.log(`[CHAT] Delivered ${finalMessage.id}`);
       }
-
-      // Send back to sender for confirmation
-      socket.emit("message", fullMessage);
     });
 
-    // Handle disconnect
     socket.on("disconnect", () => {
       onlineUsers.delete(userId);
-      console.log(`[CHAT] User disconnected: ${userId}`);
+      console.log(`[CHAT] ${userId} disconnected`);
     });
   });
 };
